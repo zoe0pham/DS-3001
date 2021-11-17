@@ -1,0 +1,369 @@
+---
+title: "Decision Tree Lab"
+author: "Zoe Pham"
+date: "November 10, 2021"
+output:
+  html_document:
+    toc: TRUE
+    theme: journal
+    toc_float: TRUE
+editor_options: 
+  chunk_output_type: console
+---
+# Problem Statement
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, warning = FALSE, error = FALSE)
+library(rio)
+library(plyr)
+library(tidyverse)
+library(rpart)
+library(psych)
+library(pROC)
+#install.packages("rpart.plot")
+library(rpart.plot)
+#install.packages("rattle")
+library(rattle)
+library(caret)
+library(C50) #Need this to pass into caret 
+library(mlbench)
+```
+
+Congrats! You just graduated UVA's MSDS program and got a job working at the 
+Treasury Department. In partnership with Congress members the Treasury has been 
+ask to come up with innovative ways to create tax policy. 
+
+*In doing so they want to be able to reliably predict whether American workers make more than $50,000 a year and also which variables seem to be most contributing 
+to predicting this outcome.*
+
+You would like to be able to explain the model to the mere mortals 
+around you but need a fairly robust and flexible approach so you've 
+chosen to use decision trees to get started and will possibly move 
+to a ensemble model if needed. 
+
+In doing so, similar to  great data scientists of the past 
+you remembered the excellent education provided 
+to you at UVA in a undergrad data science course and have outline 
+20ish steps that will need to be undertaken to complete this task 
+(you can add more or combine if needed).  As always, you will need 
+to make sure to #comment your work heavily. 
+
+# Preparing Data
+```{r}
+url <- "http://archive.ics.uci.edu/ml/machine-learning-databases/adult/adult.data"
+
+xx <- readr::read_csv(url)
+
+View(xx)
+```
+
+
+
+```{r}
+#1 Load the data, check for missing data and ensure the labels are correct. 
+
+# Label data correctly
+column_names <- c("age","workclass","fnlwgt","education","education-num","marital-status","occupation","relationship","race","sex","capital-gain","capital-loss","hours-per-week","native-country", "salary")
+
+xx <- readr::read_csv(url,col_names=column_names)
+
+xx$salary <- revalue(xx$salary, c("<=50K" = 0, ">50K" = 1))
+view(xx)
+
+```
+
+```{r}
+#2 Ensure all the variables are classified correctly including the target 
+# variable
+
+# Convert characters to factors data types
+str(xx)
+i <- sapply(xx, is.character)
+xx[,i] <- lapply(xx[,i], as.factor)
+str(xx)
+
+# Remove fglwnts column, keep rest as relevant variables
+xx <- xx[ -c(3,3) ]
+view(xx)
+
+table(xx$education)
+
+ xx$education <- fct_collapse(xx$education,
+                         No_HS = c("10th","11th","12th","1st-4th","5th-6th","7th-8th",
+                                 "9th","Preschool"),
+                        Postgrad = c("Masters"),
+                        HS_grad = "HS-grad",
+                        Some_college = "Some-college",
+                        Bachelors = "Bachelors",
+                        other = c("Assoc-acdm","Assoc-voc","Prof-school", "Doctorate")
+                        )
+ 
+ #table(xx$education)
+ 
+  xx$workclass <- fct_collapse(xx$workclass,
+                        other = c("Federal-gov","Never-worked","Without-pay", 
+                                  "State-gov","?","Local-gov")
+                                  )
+  #table(xx$workclass)
+
+  xx$`native-country` <- fct_collapse(xx$`native-country`,
+                        US = "United-States",
+                        other = c("China","Columbia","Cambodia","Canada","Cuba","Dominican-Republic","Ecuador","El-Salvador","England","France","Germany","Greece","Guatemala","Haiti","Holand-Netherlands","Honduras","Hong","Hungary","India","Iran","Ireland","Italy","Jamaica","Japan","Laos","Mexico","Nicaragua","Peru","Philippines","Poland","Portugal","Puerto-Rico","?","Outlying-US(Guam-USVI-etc)","Scotland","South","Taiwan","Thailand","Trinadad&Tobago","Vietnam","Yugoslavia")
+                                  )
+ 
+  #table(xx$native-country)
+
+  xx$`marital-status` <- fct_collapse(xx$`marital-status`,
+                        not_married = c("Separated","Divorced","Never-married","Widowed"),
+                        married = c("Married-AF-spouse","Married-civ-spouse", "Married-spouse-absent")
+                                        )
+
+ #table(xx$marital-status)
+
+  xx$occupation <- fct_collapse(xx$occupation,
+                                   other = c("?","Armed-Forces","Farming-fishing","Priv-house-serv","Protective-serv","Tech-support","Transport-moving","Adm-clerical","Sales","Other-service","Handlers-cleaners","Machine-op-inspct")
+                                  )
+
+ table(xx$occupation)
+```
+
+```{r}
+#3 Don't check for correlated variables....because it doesn't matter with 
+# Decision Trees...the make local greedy decisions. 
+```
+
+```{r}
+#4 Guess what, you also don't need to standardize the data, 
+#because DTs don't give a ish, they make local decisions...keeps getting easier
+```
+## Determining Prevalence
+```{r}
+#5 Determine the baserate or prevalence for the classifier, 
+# what does this number mean?  
+
+table(xx$salary )
+baserate = 24720 / (24720+7841)
+baserate
+
+# This base rate represents the probability the model will guess salary range right, about 75%, as the majority of salaries are less than or equal to 50k which makes it easier to guess correctly.
+
+```
+## Splitting Data: Test, Tune, Train Set
+```{r}
+#6 Split your data into test, tune, and train. (70/15/15)
+set.seed(100)
+part_index_1 <- caret::createDataPartition(xx$salary,
+                                           times=1,
+                                           p = 0.70,
+                                           groups=1,
+                                           list=FALSE)
+
+train <- xx[part_index_1, ]
+tune_and_test <- xx[-part_index_1, ]
+
+#The we need to use the function again to create the tuning set 
+
+tune_and_test_index <- createDataPartition(tune_and_test$salary,
+                                           p = .5,
+                                           list = FALSE,
+                                           times = 1)
+
+tune <- tune_and_test[tune_and_test_index, ]
+test <- tune_and_test[-tune_and_test_index, ]
+
+
+dim(train)
+dim(test)
+dim(tune)
+
+```
+# Building the Model
+```{r}
+#7 Build your model using the training data and default settings in caret, 
+# double check to make sure you are using a cross-validation training approach
+
+features <- train[,c(-14,-14)]
+
+target <- train$salary
+
+str(features)
+str(target)
+
+#Cross validation process 
+
+fitControl <- trainControl(method = "repeatedcv",
+                          number = 5,
+                          repeats = 5, 
+                          returnResamp="all",
+                          allowParallel = TRUE) 
+
+# number - number of folds
+# repeats - number of times the CV is repeated, here it's 5 take the average of
+# those 5 repeats
+
+# Grid search options for each of the models available in CARET
+# http://topepo.github.io/caret/train-models-by-tag.html#tree-based-model
+
+grid <- expand.grid(.winnow = c(TRUE,FALSE), 
+                    .trials=c(1,5,10,15,20), 
+                    .model="tree")
+
+#expand.grid - series of options that are available for model training
+
+#winnow - whether to reduce the feature space -  Works to remove unimportant 
+#features but it doesn't always work, in the above we are winnowing.  
+
+#Actually a pretty good StackExchange post on winnowing:
+#https://stats.stackexchange.com/questions/83913/understanding-the-output-of-c5-0-classification-model-using-the-caret-package
+
+#trails - number of boosting iterations to try, 1 indicates a single model 
+#model - type of ml model
+set.seed(100)
+sal_mdl <- train(x=features,
+                y=target,
+                method="C5.0",
+                tuneGrid=grid,
+                trControl=fitControl,
+                verbose=TRUE)
+
+sal_mdl #provides us the hyper-parameters that were selected through the grid
+# search process. 
+
+
+# visualize the re-sample distributions
+xyplot(sal_mdl,type = c("g", "p", "smooth"))
+
+
+
+```
+
+```{r}
+#8 View the results, what is the most important variable for the tree? 
+
+varImp(sal_mdl)
+```
+After running the decision tree, the most important variables include marital status, age, and capital gain. These three variables are probably most important in predicting whether American workers make more than $50,000 a year because married couples tend to have higher total incomes from double incomes per spouse which single people lack, younger people may earn less as they are in lower paying entry jobs as opposed to older people, and capital gain affects how much a person's existing wealth grows.
+## Data Plot
+```{r}
+#9 Plot the output of the model to see the tree visually 
+tree <- rpart(salary~., data=xx, cp=.02)# Visualize the decision tree with rpart.plot
+rpart.plot(tree, box.palette="RdBu", shadow.col="gray", nn=TRUE)
+```
+# Interpreting Results
+## Target Variable Estimation
+```{r}
+#10 Use the validation set and the predict function with your model to the
+# estimate the target variable.
+
+xx_pred_tune = predict(sal_mdl,tune, type= "raw")
+
+View(as_tibble(xx_pred_tune))
+
+```
+### Actual vs. Predicted Values
+```{r}
+#11 Compare the predicted values to those of the actual by generating a 
+# matrix ("by-hand").
+preg_conf_matrix = table(xx_pred_tune, tune$salary)
+preg_conf_matrix
+```
+## Confusion Matrix
+```{r}
+#12 Use the the confusion matrix function to check a variety of metrics 
+# and comment on the metric that might be best for this type of analysis given your question.  
+(xx_eval <- confusionMatrix(as.factor(xx_pred_tune), 
+                as.factor(tune$salary), 
+                dnn=c("Prediction", "Actual"), 
+                mode = "sens_spec"))
+```
+The validation set correctly predicted which Americans made over $50,000 a year with 85% accuracy, which is pretty good. The model's sensitivity is 93% and the specificity is 61%, showing a pretty good true positive rate but an okay false positive rate (100%-61%=39%).
+
+After checking the confusion matrix, the metric that might be best to analyze our model predicting whether Americans make more than $50,000 a year is sensitivity because determining which salaries match our criteria is vital in constructing a tax policy around it.
+## ROC and AUC
+```{r}
+#13 Generate a ROC and AUC output, interpret the results
+set.seed(100)
+xx_tree_gini = rpart(salary~.,  #<- formula, response variable ~ predictors
+                           #   "." means "use all other variables in data"
+                            method = "class",#<- specify method, use "class" for tree
+                            parms = list(split = "gini"),#<- method for choosing tree split
+                            data = tune,#<- data used
+                            control = rpart.control(cp=.001))
+xx_fitted_model = predict(xx_tree_gini, type= "class")
+
+xx_roc <- roc(tune$salary, as.numeric(xx_fitted_model), plot = TRUE) 
+#Building the evaluation ROC and AUV using the predicted and original target variables 
+
+
+```
+The ROC curve displays the tradeoffs my model has between sensitivity and specificity, or the true positive and false positive rates. The best performance is located near the top left of the graph, and the curve seems to peak when sensitivity is 0.4 and specificity is about 0.98, resulting in better predictions. 
+
+The AUC or area under the curve measures how much my model can differentiate between classes: in this case, Americans with salaries above and below $50,000 a year. A higher AUC corresponds to a higher differentiation rate, and this model does relatively okay, with the area under the curve filling a slight majority of the entire graph.
+## Threshold Adjustment
+```{r}
+#14 Use the predict function to generate percentages, then select several 
+# different threshold levels using the confusion matrix function and 
+# interpret the results. What patterns did you notice, did the evaluation metrics change? 
+adjust_thres <- function(x, y, z) {
+  #x=pred_probablities, y=threshold, z=test_outcome
+  thres <- as.factor(ifelse(x > y, 1,0))
+  confusionMatrix(thres, z, positive = "1", dnn=c("Prediction", "Actual"), mode = "everything")
+}
+xx_eval_prob <- predict(sal_mdl, newdata = test, type = "prob")
+
+adjust_thres(xx_eval_prob$`1`,.80, test$salary)
+adjust_thres(xx_eval_prob$`1`,.40, test$salary)
+adjust_thres(xx_eval_prob$`1`,.60, test$salary)
+adjust_thres(xx_eval_prob$`1`,.10, test$salary)
+
+```
+After adjusting the threshold to 80%, 40%, and 60%, I found that many surrounding thresholds only increased the accuracy slightly or decreased it greatly the farther the threshold was from 50%, however sensitivity did increase slightly at some interesting thresholds like 10%. However, these increases in sensitivity were not great enough for an adjusted threshold of the model to improve our model.
+## Hyperparameter Tuning
+```{r}
+#15 Based on your understanding of the model and data adjust several of the hyper-parameters via the built in train control function in caret or build and try new features, does the model quality improve? If so how and why, if not, why not?
+# Use this link: https://rdrr.io/cran/caret/man/trainControl.html to select changes,
+# you aren't expected to understand all these options but explore one or two and 
+# see what happens. 
+xx_eval_prob <- predict(sal_mdl, newdata = test, type = "prob")
+adjustControl <- trainControl(method = "repeatedcv",
+                          number = 5,
+                          repeats = 8, 
+                          returnResamp="all",
+                          selectionFunction = "best",
+                          allowParallel = TRUE)
+
+set.seed(100)
+sal_mdl_1 <- train(x=features,
+                y=target,
+                method="C5.0",
+                tuneGrid=grid,
+                trControl=adjustControl,
+                verbose=TRUE)
+
+sal_mdl_1
+```
+# Final Output
+```{r}
+#16 Once you are confident that your model is not improving, via changes 
+# implemented on the training set and evaluated on the the validation set (item 16), predict with the test set and report a final evaluation of the model. Discuss the output in comparison with the previous evaluations.  
+xx_pred_test = predict(sal_mdl, test, type = "raw")
+confusionMatrix(as.factor(xx_pred_test), 
+                as.factor(test$salary), 
+                dnn=c("Prediction", "Actual"), 
+                mode = "sens_spec")
+
+
+```
+Predicting with the test set resulted in an increase in accuracy and sensitivity by 1% to 85% and 94% respectively, improving our model's classification of Americans making more than $50,000 a year and better classifying salaries to produce better tax policy. 
+```{r}
+#17 Summarize what you learned along the way and make recommendations on how this could be used moving forward, being careful not to over promise. 
+```
+## Summary
+I learned that decision trees are powerful tools to build, train, tune, test, and evaluate machine learning predictive models that can be done with few computational resources and time. I found that tuning had a lot of trial and error in adjusting thresholds and adjusting hyperparameters, taking up a lot of time when not automated. 
+### Recommendations
+Some recommendations on how this decision tree model could be used moving forward could be to predict the amount of Americans with salaries over $50,000 to predict how much tax revenue would be made and how much tax percentage to levy to break even on government expenses; however, this prediction should only be used along with actual data gathering, such as surveying households across areas and limiting data sampling bias (gathering data in a variety of neighborhoods, with people of varying marital status, age, and race, etc.) so all Americans are represented.
+```{r}
+#18 What was the most interesting or hardest part of this process and what questions do you still have? 
+```
+### Questions
+The hardest part of this process was deciding on hyperparameters to adjust, as tuning is very specific to my data's behavior and structure, so I had to guess and check to see which hyperparameters worked best to improve my model.
+
